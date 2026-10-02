@@ -48,20 +48,19 @@ df_picks = pd.read_csv(CSV_FILE)
 if not df_picks.empty:
     df_picks['Datum'] = pd.to_datetime(df_picks['Datum'])
     
-    # Benchmarks (ASHR ist der CSI 300 ETF, verhindert NaN Fehler)
+    # Benchmarks (ASHR ist der CSI 300 ETF)
     benchmarks = {'DAX': '^GDAXI', 'MSCI World': 'URTH', 'Nasdaq': '^IXIC', 'CSI 300': 'ASHR'}
     
     alle_ticker = df_picks['Ticker'].unique().tolist() + list(benchmarks.values())
     start_datum = df_picks['Datum'].min()
     
     with st.spinner("Lade Live-Kurse von Yahoo Finance..."):
-        # bfill() und ffill() füllen Lücken an Feiertagen auf und verhindern NaN
         data = yf.download(alle_ticker, start=start_datum)['Close']
         data = data.ffill().bfill()
     
     heutiger_kurs = data.iloc[-1]
     
-    # --- BERECHNUNG: INDIZES (Von Tag 1 bis Heute) ---
+    # --- BERECHNUNG: INDIZES ---
     start_kurse_indizes = data.loc[start_datum.strftime('%Y-%m-%d'):].iloc[0]
     perf_benchmarks = {}
     for b_name, b_ticker in benchmarks.items():
@@ -71,23 +70,39 @@ if not df_picks.empty:
     # --- BERECHNUNG: KOLLEGE (Wöchentliche 100€ Tranchen) ---
     gesamt_investiert = len(df_picks) * 100
     aktueller_portfolio_wert = 0
+    fehlerhafte_ticker = []
     
     for _, row in df_picks.iterrows():
         kauf_tag = row['Datum'].strftime('%Y-%m-%d')
         try:
             kurs_kauf_tag = data.loc[kauf_tag:].iloc[0]
+            
+            # SCHUTZ-MECHANISMUS: Prüfen, ob Yahoo ein NaN geliefert hat
+            if pd.isna(heutiger_kurs[row['Ticker']]) or pd.isna(kurs_kauf_tag[row['Ticker']]):
+                fehlerhafte_ticker.append(row['Ticker'])
+                gesamt_investiert -= 100 # Diese Tranche aus der Rechnung nehmen
+                continue
+                
             wert_der_tranche = 100 * (heutiger_kurs[row['Ticker']] / kurs_kauf_tag[row['Ticker']])
             aktueller_portfolio_wert += wert_der_tranche
         except Exception:
-            st.error(f"Fehler bei {row['Ticker']}. Krypto braucht '-USD' (z.B. BTC-USD). Bitte löschen und neu anlegen.")
+            fehlerhafte_ticker.append(row['Ticker'])
+            gesamt_investiert -= 100
+            
+    # Fehlermeldung anzeigen, falls Ticker ungültig sind
+    if fehlerhafte_ticker:
+        st.error(f"🚨 Fehler bei folgenden Tickern (keine Daten gefunden): {', '.join(set(fehlerhafte_ticker))}. Sie wurden vorerst aus der Rechnung entfernt. Bitte löschen und Alternativen (z.B. .F statt .DE) nutzen.")
 
-    # Gesamtrendite des Kollegen in Prozent
-    perf_kollege = ((aktueller_portfolio_wert / gesamt_investiert) - 1) * 100
+    # Gesamtrendite des Kollegen
+    if gesamt_investiert > 0:
+        perf_kollege = ((aktueller_portfolio_wert / gesamt_investiert) - 1) * 100
+    else:
+        perf_kollege = 0
 
     # --- ANZEIGE ---
     colA, colB = st.columns(2)
     with colA:
-        st.metric("Eingezahltes Kapital", f"{gesamt_investiert} €")
+        st.metric("Eingezahltes Kapital (Gültige Picks)", f"{gesamt_investiert} €")
     with colB:
         st.metric("Aktueller Wert", f"{aktueller_portfolio_wert:.2f} €")
 
